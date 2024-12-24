@@ -55,35 +55,83 @@ impl InitCommand {
         Ok(())
     }
 
-    fn setup_traefik(client: &SshClient, email: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Install Docker if not present
-        println!("Checking Docker installation...");
-        let (output, status) = client.execute_command("command -v docker || (curl -fsSL https://get.docker.com | sh)")?;
-        if status == 0 {
-            println!("✓ Docker is installed");
+    fn setup_docker(client: &SshClient) -> Result<(), Box<dyn std::error::Error>> {
+        // Check if Docker is already installed
+        println!("Checking if Docker is already installed...");
+        let (docker_check, docker_status) = client.execute_command("command -v docker")?;
+
+        if docker_status != 0 {
+            println!("Docker not found, installing...");
+            // Download Docker installation script
+            let (_, download_status) = client.execute_command("curl -fsSL https://get.docker.com -o /tmp/get-docker.sh")?;
+            if download_status != 0 {
+                return Err("Failed to download Docker installation script".into());
+            }
+
+            // Make script executable and run it with sudo and capture full output
+            let (install_output, install_status) = client.execute_command("sudo DEBIAN_FRONTEND=noninteractive sh /tmp/get-docker.sh 2>&1")?;
+            println!("Docker installation output: {}", install_output);
+
+            if install_status != 0 {
+                return Err(format!("Docker installation failed with status {}: {}", install_status, install_output).into());
+            }
+
+            // Clean up
+            let _ = client.execute_command("rm /tmp/get-docker.sh")?;
+
+            // Add current user to docker group
+            println!("Adding user to docker group...");
+            let _ = client.execute_command("sudo usermod -aG docker $USER")?;
+
+            println!("✓ Docker installed successfully");
         } else {
-            println!("Failed to install Docker: {}", output);
-            return Err("Docker installation failed".into());
+            println!("✓ Docker is already installed at: {}", docker_check.trim());
         }
 
+        // Verify Docker is working
+        let (version_output, version_status) = client.execute_command("docker --version")?;
+        if version_status != 0 {
+            return Err(format!("Docker verification failed: {}", version_output).into());
+        }
+        println!("✓ Docker version: {}", version_output.trim());
+
+        Ok(())
+    }
+
+    fn setup_traefik(client: &SshClient, email: &str) -> Result<(), Box<dyn std::error::Error>> {
         // Setup Traefik
         println!("Setting up Traefik...");
+
+        // Verify docker compose is available
+        println!("Verifying docker compose...");
+        let (compose_output, compose_status) = client.execute_command("docker compose version")?;
+        if compose_status != 0 {
+            return Err(format!("Docker Compose not available: {}", compose_output).into());
+        }
+        println!("✓ Docker Compose is available");
+
+        // Verify docker permissions
+        println!("Verifying docker permissions...");
+        let (groups_output, _) = client.execute_command("groups")?;
+        if !groups_output.contains("docker") {
+            return Err("Current user is not in the docker group. Please reconnect to the server.".into());
+        }
+        println!("✓ Docker permissions verified");
+
         let traefik_config = TRAEFIK_CONFIG_TEMPLATE.replace("{{email}}", email);
 
         let traefik_commands = [
             // Create directory structure
-            "mkdir -p /opt/traefik/config/dynamic",
-            "mkdir -p /opt/traefik/data",
+            "sudo mkdir -p /opt/traefik/config/dynamic",
+            "sudo mkdir -p /opt/traefik/data",
             // Create and set permissions for acme.json
-            "touch /opt/traefik/data/acme.json",
-            "chmod 600 /opt/traefik/data/acme.json",
+            "sudo touch /opt/traefik/data/acme.json",
+            "sudo chmod 600 /opt/traefik/data/acme.json",
             // Create Docker network
             "docker network create traefik_proxy || true",
             // Write configuration files
-            &format!("cat > /opt/traefik/config/traefik.yml << 'EOL'\n{}\nEOL", traefik_config),
-            &format!("cat > /opt/traefik/docker-compose.yml << 'EOL'\n{}\nEOL", TRAEFIK_DOCKER_COMPOSE),
-            // Start Traefik
-            "cd /opt/traefik && docker compose up -d"
+            &format!("sudo bash -c 'cat > /opt/traefik/config/traefik.yml << EOL\n{}\nEOL'", traefik_config),
+            &format!("sudo bash -c 'cat > /opt/traefik/docker-compose.yml << EOL\n{}\nEOL'", TRAEFIK_DOCKER_COMPOSE),
         ];
 
         for cmd in traefik_commands {
@@ -93,6 +141,29 @@ impl InitCommand {
                 println!("Error: {}", output);
                 return Err("Traefik setup failed".into());
             }
+        }
+
+        // Verify files exist
+        println!("Verifying configuration files...");
+        let (ls_output, ls_status) = client.execute_command("ls -l /opt/traefik/config/traefik.yml /opt/traefik/docker-compose.yml")?;
+        if ls_status != 0 {
+            return Err(format!("Configuration files not found: {}", ls_output).into());
+        }
+        println!("✓ Configuration files verified");
+
+        // Start Traefik with detailed output
+        println!("Starting Traefik...");
+        let (compose_output, compose_status) = client.execute_command("cd /opt/traefik && docker compose up -d 2>&1")?;
+        if compose_status != 0 {
+            println!("Docker Compose output: {}", compose_output);
+            return Err("Failed to start Traefik".into());
+        }
+
+        // Verify Traefik is running
+        println!("Verifying Traefik is running...");
+        let (ps_output, ps_status) = client.execute_command("docker ps --filter 'name=traefik' --format '{{.Status}}'")?;
+        if ps_status != 0 || !ps_output.contains("Up") {
+            return Err(format!("Traefik is not running. Status: {}", ps_output).into());
         }
 
         println!("✓ Traefik setup complete");
@@ -115,7 +186,10 @@ impl InitCommand {
             // Set proper permissions
             "chmod 700 /home/minion/.ssh",
             "chmod 600 /home/minion/.ssh/authorized_keys",
-            // Disable root SSH login
+            // Grant sudo privileges without password
+            "echo 'minion ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/minion",
+            "chmod 440 /etc/sudoers.d/minion",
+            // Disable t SSH login
             "sed -i 's/^#\\?PermitRootLogin\\s*yes/PermitRootLogin no/' /etc/ssh/sshd_config",
             "sed -i 's/^#\\?PasswordAuthentication\\s*yes/PasswordAuthentication no/' /etc/ssh/sshd_config",
             // Restart SSH service to apply changes
@@ -205,24 +279,19 @@ impl InitCommand {
             Self::setup_users(&client)?;
         }
 
-        // Connect as minion user and setup the server
+        // Connect as minion user and setup Docker
         println!("Connecting as minion user...");
-        let ssh_result = SshClient::connect(&host, "minion", None)
-            .and_then(|client| {
-                Self::setup_traefik(&client, &email)?;
-                Ok(client)
-            });
+        let client = SshClient::connect(&host, "minion", None)?;
+        Self::setup_docker(&client)?;
+        println!("Reconnecting to apply group changes...");
+        drop(client);
 
-        match ssh_result {
-            Ok(_client) => {
-                println!("✓ SSH connection established!");
-                println!("✓ Initialization complete!");
-                Ok(())
-            }
-            Err(e) => {
-                println!("✗ SSH connection failed: {}", e);
-                Err(e)
-            }
-        }
+        // Reconnect and setup Traefik
+        let client = SshClient::connect(&host, "minion", None)?;
+        Self::setup_traefik(&client, &email)?;
+
+        println!("✓ SSH connection established!");
+        println!("✓ Initialization complete!");
+        Ok(())
     }
 }
