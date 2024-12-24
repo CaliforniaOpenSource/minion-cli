@@ -1,0 +1,25 @@
+version: '3'
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - /opt/traefik/config/dynamic:/etc/traefik/dynamic:ro
+      - /opt/traefik/data/acme.json:/etc/traefik/acme.json
+    networks:
+      - traefik_proxy
+    labels:
+      - "traefik.enable=true"
+
+networks:
+  traefik_proxy:
+    external: true
