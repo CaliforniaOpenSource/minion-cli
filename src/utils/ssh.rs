@@ -1,6 +1,9 @@
 use ssh2::Session;
 use std::net::TcpStream;
 use std::io::Read;
+use std::path::Path;
+use std::fs::File;
+use std::io::Write;
 
 pub struct SshClient {
     session: Session,
@@ -39,5 +42,26 @@ impl SshClient {
         let exit_status = channel.exit_status()?;
 
         Ok((output, exit_status))
+    }
+
+    pub fn copy_file(&self, local_path: &str, remote_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut local_file = File::open(local_path)?;
+        let mut contents = Vec::new();
+        local_file.read_to_end(&mut contents)?;
+
+        let mut remote_file = self.session.scp_send(
+            Path::new(remote_path),
+            0o644,
+            contents.len() as u64,
+            None,
+        )?;
+
+        remote_file.write_all(&contents)?;
+        remote_file.send_eof()?;
+        remote_file.wait_eof()?;
+        remote_file.close()?;
+        remote_file.wait_close()?;
+
+        Ok(())
     }
 }
