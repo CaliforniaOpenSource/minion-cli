@@ -5,6 +5,11 @@ api:
 entryPoints:
   web:
     address: ":80"
+    transport:
+      respondingTimeouts:
+        readTimeout: "3600s"
+        writeTimeout: "3600s"
+        idleTimeout: "3600s"
     http:
       redirections:
         entryPoint:
@@ -12,11 +17,16 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+    transport:
+      respondingTimeouts:
+        readTimeout: "3600s"
+        writeTimeout: "3600s"
+        idleTimeout: "3600s"
 
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: {{email}}
+      email: "{{email}}"
       storage: /etc/traefik/acme.json
       httpChallenge:
         entryPoint: web

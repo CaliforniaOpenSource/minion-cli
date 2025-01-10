@@ -15,10 +15,10 @@ services:
       - /opt/traefik/config/dynamic:/etc/traefik/dynamic:ro
       - /opt/traefik/data/acme.json:/etc/traefik/acme.json
     networks:
-      - traefik_proxy
+      - traefik_network
     labels:
       - "traefik.enable=true"
 
 networks:
-  traefik_proxy:
+  traefik_network:
     external: true

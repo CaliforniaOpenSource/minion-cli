@@ -65,3 +65,79 @@ impl SshClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+    use std::collections::HashMap;
+    use std::{thread, time::Duration};
+
+    use testcontainers::{
+        core::{IntoContainerPort, WaitFor, ContainerPort},
+        runners::SyncRunner,
+        GenericImage,
+        Image,
+    };
+
+    pub struct OpenSshServerContainer {
+        env_vars: HashMap<String, String>,
+        exposed_ports: Vec<ContainerPort>,
+    }
+
+    impl Default for OpenSshServerContainer {
+        fn default() -> Self {
+            let mut env_vars = HashMap::new();
+            env_vars.insert("PASSWORD_ACCESS".to_string(), "true".to_string());
+            env_vars.insert("USER_NAME".to_string(), "testuser".to_string());
+            env_vars.insert("USER_PASSWORD".to_string(), "testpass".to_string());
+            let exposed_ports = vec![2222.tcp()];
+            Self { env_vars, exposed_ports }
+        }
+    }
+
+    impl Image for OpenSshServerContainer {
+
+        fn name(&self) -> &str {
+            "linuxserver/openssh-server"
+        }
+
+        fn tag(&self) -> &str {
+            "latest"
+        }
+
+        fn ready_conditions(&self) -> Vec<WaitFor> {
+            vec![WaitFor::message_on_stdout("[ls.io-init] done.")]
+        }
+
+        fn expose_ports(&self) -> &[ContainerPort] {
+            &self.exposed_ports
+        }
+
+        fn env_vars(&self) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
+            Box::new(self.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        }
+    }
+
+    #[test]
+    fn test_ssh_connection_and_commands() {
+        let image = OpenSshServerContainer::default();
+        let container = image.start().unwrap();
+
+        let port = container.get_host_port_ipv4(2222).unwrap();
+        let client = SshClient::connect(
+            &format!("localhost:{}", port),
+            "testuser",
+            Some("testpass")
+        ).expect("Failed to connect");
+
+        // Test command execution
+        let (output, status) = client.execute_command("echo 'hello world'")
+            .expect("Failed to execute command");
+        assert_eq!(status, 0);
+        assert_eq!(output.trim(), "hello world");
+
+        // // Test file copy
+        // // TODO: Add file copy test
+    }
+}

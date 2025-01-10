@@ -138,7 +138,7 @@ services:
     image: minion_{app_name}
     restart: unless-stopped
     networks:
-      - traefik_proxy
+      - traefik_network
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.{app_name}.rule=Host(`{url}`)"
@@ -147,7 +147,7 @@ services:
       - "traefik.http.services.{app_name}.loadbalancer.server.port={port}"
 
 networks:
-  traefik_proxy:
+  traefik_network:
     external: true
 "#)
     }

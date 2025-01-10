@@ -17,3 +17,6 @@ path = "src/main.rs"
 clap = { version = "4.5.23", features = ["derive"] }
 dotenvy = "0.15.7"
 ssh2 = "0.9.4"
+
+[dev-dependencies]
+testcontainers = { version = "0.23.1", features = ["blocking"] }
