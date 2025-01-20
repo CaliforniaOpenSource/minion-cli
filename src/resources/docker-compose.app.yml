@@ -1,0 +1,16 @@
+services:
+  {{app_name}}:
+    image: minion_{{app_name}}
+    restart: unless-stopped
+    networks:
+      - traefik_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.{{app_name}}.rule=Host(`{{url}}`)"
+      - "traefik.http.routers.{{app_name}}.entrypoints=websecure"
+      - "traefik.http.routers.{{app_name}}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.{{app_name}}.loadbalancer.server.port={{port}}"
+
+networks:
+  traefik_network:
+    external: true

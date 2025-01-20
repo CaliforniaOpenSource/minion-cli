@@ -1,7 +1,11 @@
-use anyhow::{Result, anyhow};
+use crate::utils::{CommandExecutor, Config, SshClient};
+use anyhow::{anyhow, Result};
 use std::io::{self, Write};
 use std::path::Path;
-use crate::utils::{Config, SshClient, CommandExecutor};
+use tempfile::Builder;
+
+// Include the resource files at compile time
+const APP_DOCKER_COMPOSE: &str = include_str!("../resources/docker-compose.app.yml");
 
 pub struct DeployCommand;
 
@@ -10,104 +14,21 @@ impl DeployCommand {
         DeployCommand
     }
 
-    fn load_or_prompt_app_name(config: &mut Config) -> Result<String> {
-        let existing_app = config.get("APP_NAME");
-
-        print!("Enter app name");
-        if let Some(app_val) = &existing_app {
-            print!(" [{}]", app_val);
-        }
-        print!(": ");
-        io::stdout().flush()?;
-
-        let mut input_app = String::new();
-        io::stdin().read_line(&mut input_app)?;
-        let input_app = input_app.trim();
-
-        let app_name = if input_app.is_empty() {
-            existing_app.ok_or_else(|| anyhow!("No existing app name found and no input provided"))?.to_string()
-        } else {
-            input_app.to_string()
-        };
-
-        config.set("APP_NAME".to_string(), app_name.clone());
-        config.save()?;
-
-        Ok(app_name)
-    }
-
-    fn verify_dockerfile() -> Result<()> {
-        if !Path::new("Dockerfile").exists() {
-            return Err(anyhow!("Dockerfile not found in current directory"));
-        }
-        println!("✓ Dockerfile found");
-        Ok(())
-    }
-
-    fn prompt_app_url(config: &mut Config) -> Result<String> {
-        let existing_url = config.get("APP_URL");
-
-        print!("Enter the URL for the app (e.g., app.example.com)");
-        if let Some(url_val) = &existing_url {
-            print!(" [{}]", url_val);
-        }
-        print!(": ");
-        io::stdout().flush()?;
-
-        let mut input_url = String::new();
-        io::stdin().read_line(&mut input_url)?;
-        let input_url = input_url.trim();
-
-        let url = if input_url.is_empty() && existing_url.is_some() {
-            existing_url.unwrap().to_string()
-        } else {
-            input_url.to_string()
-        };
-
-        config.set("APP_URL".to_string(), url.clone());
-        config.save()?;
-
-        Ok(url)
-    }
-
-    fn prompt_app_port(config: &mut Config) -> Result<u16> {
-        let existing_port = config.get("APP_PORT");
-
-        print!("Enter the port your app exposes inside the container");
-        if let Some(port_val) = &existing_port {
-            print!(" [{}]", port_val);
-        }
-        print!(": ");
-        io::stdout().flush()?;
-
-        let mut input_port = String::new();
-        io::stdin().read_line(&mut input_port)?;
-        let input_port = input_port.trim();
-
-        let port: u16 = if input_port.is_empty() && existing_port.is_some() {
-            existing_port.unwrap().parse()?
-        } else {
-            input_port.parse()?
-        };
-
-        config.set("APP_PORT".to_string(), port.to_string());
-        config.save()?;
-
-        Ok(port)
-    }
-
     fn build_and_save_image(&self, app_name: &str) -> Result<()> {
         println!("Building Docker image for ARM64...");
         let cmd = CommandExecutor::new();
 
         // Build the image with platform specified
-        let (output, status) = cmd.execute("docker", &[
-            "build",
-            "-t",
-            &format!("minion_{}", app_name),
-            ".",
-            "--platform=linux/amd64",
-        ])?;
+        let (output, status) = cmd.execute(
+            "docker",
+            &[
+                "build",
+                "-t",
+                &format!("minion_{}", app_name),
+                ".",
+                "--platform=linux/amd64",
+            ],
+        )?;
 
         if status != 0 {
             return Err(anyhow!("Failed to build Docker image: {}", output));
@@ -115,42 +36,31 @@ impl DeployCommand {
 
         println!("✓ Docker image built successfully");
 
-        // Save the image to a tar file
-        println!("Saving image to file...");
-        let (output, status) = cmd.execute("docker", &[
-            "save",
-            "-o",
-            &format!("{}.tar", app_name),
-            &format!("minion_{}", app_name)
-        ])?;
+        // Create a temporary file with .tar extension
+        let temp_file = Builder::new()
+            .prefix("minion_")
+            .suffix(".tar")
+            .tempfile()?;
+        let temp_path = temp_file.path().to_string_lossy().to_string();
+
+        // Save the image to the temporary file
+        println!("Saving image to temporary file...");
+        let (output, status) = cmd.execute(
+            "docker",
+            &[
+                "save",
+                "-o",
+                &temp_path,
+                &format!("minion_{}", app_name),
+            ],
+        )?;
 
         if status != 0 {
             return Err(anyhow!("Failed to save Docker image: {}", output));
         }
 
-        println!("✓ Docker image saved to {}.tar", app_name);
+        println!("✓ Docker image saved to temporary file");
         Ok(())
-    }
-
-    fn generate_compose_file(app_name: &str, url: &str, port: u16) -> String {
-        format!(r#"
-services:
-  {app_name}:
-    image: minion_{app_name}
-    restart: unless-stopped
-    networks:
-      - traefik_network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.{app_name}.rule=Host(`{url}`)"
-      - "traefik.http.routers.{app_name}.entrypoints=websecure"
-      - "traefik.http.routers.{app_name}.tls.certresolver=letsencrypt"
-      - "traefik.http.services.{app_name}.loadbalancer.server.port={port}"
-
-networks:
-  traefik_network:
-    external: true
-"#)
     }
 
     fn deploy_app(&self, client: &SshClient, app_name: &str, url: &str, port: u16) -> Result<()> {
@@ -171,15 +81,14 @@ networks:
         }
 
         // Generate and upload docker-compose file
-        let compose_content = Self::generate_compose_file(app_name, url, port);
+        let compose_content = APP_DOCKER_COMPOSE
+            .replace("{{app_name}}", app_name)
+            .replace("{{url}}", url)
+            .replace("{{port}}", &port.to_string());
         let compose_path = format!("{}/docker-compose.yml", app_dir);
 
         println!("Creating docker-compose.yml...");
-        let write_compose = format!(
-            "cat > {} << 'EOL'\n{}\nEOL",
-            compose_path,
-            compose_content
-        );
+        let write_compose = format!("cat > {} << 'EOL'\n{}\nEOL", compose_path, compose_content);
 
         let (output, status) = client.execute_command(&write_compose)?;
         if status != 0 {
@@ -190,7 +99,10 @@ networks:
 
         // Copy the image file to the VPS
         println!("Copying Docker image to VPS...");
-        client.copy_file(&format!("{}.tar", app_name), &format!("{}/{}.tar", app_dir, app_name))?;
+        client.copy_file(
+            &format!("{}.tar", app_name),
+            &format!("{}/{}.tar", app_dir, app_name),
+        )?;
 
         // Load the image and clean up
         let deploy_commands = [
@@ -214,32 +126,67 @@ networks:
         Ok(())
     }
 
-    fn load_args(config: &mut Config) -> Result<(String, String, String, u16)> {
-        // Get host first (immutable read)
-        let host = config.get("VPS_HOST")
-            .ok_or_else(|| anyhow!("VPS host not found in config"))?
-            .to_string();
+    fn prompt_with_default(prompt: &str, default: Option<&String>) -> anyhow::Result<String> {
+        print!("{}", prompt);
+        if let Some(default_val) = default {
+            print!(" [{}]", default_val);
+        }
+        print!(": ");
+        io::stdout().flush()?;
 
-        // Get app name with prompt
-        let app_name = Self::load_or_prompt_app_name(config)?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
 
-        // Get URL and port with defaults
-        let url = Self::prompt_app_url(config)?;
-        let port = Self::prompt_app_port(config)?;
+        Ok(if input.is_empty() {
+            default.expect("No default value provided").to_string()
+        } else {
+            input.to_string()
+        })
+    }
 
-        Ok((host, app_name, url, port))
+    fn load_args() -> anyhow::Result<(String, String, String, String)> {
+        let config = Config::new(".minion")?;
+        let existing_host = config.get("VPS_HOST");
+        let existing_name = config.get("APP_NAME");
+        let existing_url = config.get("APP_URL");
+        let existing_port = config.get("APP_PORT");
+
+        let host = Self::prompt_with_default("Enter VPS hostname or IP address", existing_host)?;
+
+        let name = Self::prompt_with_default("Enter app name", existing_name)?;
+
+        let url = Self::prompt_with_default(
+            "Enter the URL for the app (e.g., app.example.com)",
+            existing_url,
+        )?;
+
+        let port =
+            Self::prompt_with_default("Enter the port for the app (e.g., 8000)", existing_port)?;
+
+        // Save both configs
+        let mut config = Config::new(".minion")?;
+        config.set("VPS_HOST".to_string(), host.clone());
+        config.set("APP_NAME".to_string(), name.clone());
+        config.set("APP_URL".to_string(), url.clone());
+        config.set("APP_PORT".to_string(), port.clone());
+        config.save()?;
+
+        Ok((host, name, url, port))
     }
 
     pub fn execute(&self) -> Result<()> {
-        let mut config = Config::new(".minion")?;
-
         // Get all arguments up front
-        let (host, app_name, url, port) = Self::load_args(&mut config)?;
+        let (host, app_name, url, port) = Self::load_args()?;
+        let port = port.parse::<u16>()?;
 
         println!("Connecting to {}...", host);
 
         // Verify dockerfile before proceeding
-        Self::verify_dockerfile()?;
+        if !Path::new("Dockerfile").exists() {
+            return Err(anyhow!("Dockerfile not found in current directory"));
+        }
+        println!("✓ Dockerfile found");
 
         // Build and save the Docker image
         self.build_and_save_image(&app_name)?;

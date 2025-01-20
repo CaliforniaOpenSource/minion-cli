@@ -3,7 +3,7 @@ use crate::utils::{SshClient, CommandExecutor};
 use std::path::Path;
 
 // Include the resource files at compile time
-const TRAEFIK_DOCKER_COMPOSE: &str = include_str!("../resources/docker-compose.yml");
+const TRAEFIK_DOCKER_COMPOSE: &str = include_str!("../resources/docker-compose.traefik.yml");
 const TRAEFIK_CONFIG_TEMPLATE: &str = include_str!("../resources/traefik.yml");
 
 pub struct SetupCommand;

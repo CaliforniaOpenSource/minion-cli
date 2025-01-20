@@ -28,32 +28,46 @@ impl InitCommand {
         })
     }
 
-    fn load_args() -> anyhow::Result<(String, String)> {
+    fn load_args() -> anyhow::Result<(String, String, String, String)> {
         let config = Config::new(".minion")?;
         let existing_host = config.get("VPS_HOST");
-        let existing_email = config.get("CERT_EMAIL");
+        let existing_name = config.get("APP_NAME");
+        let existing_url = config.get("APP_URL");
+        let existing_port = config.get("APP_PORT");
 
         let host = Self::prompt_with_default(
             "Enter VPS hostname or IP address",
             existing_host
         )?;
 
-        let email = Self::prompt_with_default(
-            "Enter email address for SSL certificates",
-            existing_email
+        let name = Self::prompt_with_default(
+            "Enter app name",
+            existing_name
+        )?;
+
+        let url = Self::prompt_with_default(
+            "Enter the URL for the app (e.g., app.example.com)",
+            existing_url
+        )?;
+
+        let port = Self::prompt_with_default(
+            "Enter the port for the app (e.g., 8000)",
+            existing_port
         )?;
 
         // Save both configs
         let mut config = Config::new(".minion")?;
         config.set("VPS_HOST".to_string(), host.clone());
-        config.set("CERT_EMAIL".to_string(), email.clone());
+        config.set("APP_NAME".to_string(), name.clone());
+        config.set("APP_URL".to_string(), url.clone());
+        config.set("APP_PORT".to_string(), port.clone());
         config.save()?;
 
-        Ok((host, email))
+        Ok((host, name, url, port))
     }
 
     pub fn execute(&self) -> anyhow::Result<()> {
-        let (_host, _email) = Self::load_args()?;
+        let (_host, _name, _url, _port) = Self::load_args()?;
         println!("✓ Configuration saved successfully!");
         Ok(())
     }
