@@ -128,7 +128,7 @@ impl SetupCommand {
             "sudo touch /opt/traefik/data/acme.json",
             "sudo chmod 600 /opt/traefik/data/acme.json",
             // Create Docker network
-            "docker network create traefik_proxy || true",
+            "docker network create traefik_network || true",
             // Write configuration files
             &format!("sudo bash -c 'cat > /opt/traefik/config/traefik.yml << EOL\n{}\nEOL'", traefik_config),
             &format!("sudo bash -c 'cat > /opt/traefik/docker-compose.yml << EOL\n{}\nEOL'", TRAEFIK_DOCKER_COMPOSE),
