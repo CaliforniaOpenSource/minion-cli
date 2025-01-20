@@ -14,7 +14,8 @@ impl DeployCommand {
         DeployCommand
     }
 
-    fn build_and_save_image(&self, app_name: &str) -> Result<()> {
+    fn deploy_app(&self, client: &SshClient, app_name: &str, url: &str, port: u16) -> Result<()> {
+        // Build and save the Docker image
         println!("Building Docker image for ARM64...");
         let cmd = CommandExecutor::new();
 
@@ -60,10 +61,7 @@ impl DeployCommand {
         }
 
         println!("✓ Docker image saved to temporary file");
-        Ok(())
-    }
 
-    fn deploy_app(&self, client: &SshClient, app_name: &str, url: &str, port: u16) -> Result<()> {
         println!("Creating app directory on VPS...");
         let app_dir = format!("/opt/minion/{}", app_name);
 
@@ -100,7 +98,7 @@ impl DeployCommand {
         // Copy the image file to the VPS
         println!("Copying Docker image to VPS...");
         client.copy_file(
-            &format!("{}.tar", app_name),
+            &temp_path,
             &format!("{}/{}.tar", app_dir, app_name),
         )?;
 
@@ -117,9 +115,6 @@ impl DeployCommand {
                 return Err(anyhow!("Failed to execute command {}: {}", cmd, output));
             }
         }
-
-        // Clean up local tar file
-        std::fs::remove_file(format!("{}.tar", app_name))?;
 
         println!("✓ Application deployed successfully!");
         println!("✓ Your app should be available at https://{} shortly", url);
@@ -187,9 +182,6 @@ impl DeployCommand {
             return Err(anyhow!("Dockerfile not found in current directory"));
         }
         println!("✓ Dockerfile found");
-
-        // Build and save the Docker image
-        self.build_and_save_image(&app_name)?;
 
         // Connect to VPS and deploy
         let client = SshClient::connect(&host, "minion", None)?;
