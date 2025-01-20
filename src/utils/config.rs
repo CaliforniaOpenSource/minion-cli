@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::fs;
 use std::collections::HashMap;
+use anyhow::Result;
 
 pub struct Config {
     values: HashMap<String, String>,
@@ -8,7 +9,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(file_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(file_path: &str) -> Result<Self> {
         let path = Path::new(file_path);
         let values = if path.exists() {
             let content = fs::read_to_string(path)?;
@@ -37,7 +38,7 @@ impl Config {
         self.values.insert(key, value);
     }
 
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save(&self) -> Result<()> {
         let content: String = self.values.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<String>>()

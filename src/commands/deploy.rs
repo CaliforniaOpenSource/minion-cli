@@ -1,3 +1,4 @@
+use anyhow::{Result, anyhow};
 use std::io::{self, Write};
 use std::path::Path;
 use crate::utils::{Config, SshClient, CommandExecutor};
@@ -9,7 +10,7 @@ impl DeployCommand {
         DeployCommand
     }
 
-    fn load_or_prompt_app_name(config: &mut Config) -> Result<String, Box<dyn std::error::Error>> {
+    fn load_or_prompt_app_name(config: &mut Config) -> Result<String> {
         let existing_app = config.get("APP_NAME");
 
         print!("Enter app name");
@@ -24,7 +25,7 @@ impl DeployCommand {
         let input_app = input_app.trim();
 
         let app_name = if input_app.is_empty() {
-            existing_app.ok_or("No existing app name found and no input provided")?.to_string()
+            existing_app.ok_or_else(|| anyhow!("No existing app name found and no input provided"))?.to_string()
         } else {
             input_app.to_string()
         };
@@ -35,15 +36,15 @@ impl DeployCommand {
         Ok(app_name)
     }
 
-    fn verify_dockerfile() -> Result<(), Box<dyn std::error::Error>> {
+    fn verify_dockerfile() -> Result<()> {
         if !Path::new("Dockerfile").exists() {
-            return Err("Dockerfile not found in current directory".into());
+            return Err(anyhow!("Dockerfile not found in current directory"));
         }
         println!("✓ Dockerfile found");
         Ok(())
     }
 
-    fn prompt_app_url(config: &mut Config) -> Result<String, Box<dyn std::error::Error>> {
+    fn prompt_app_url(config: &mut Config) -> Result<String> {
         let existing_url = config.get("APP_URL");
 
         print!("Enter the URL for the app (e.g., app.example.com)");
@@ -69,7 +70,7 @@ impl DeployCommand {
         Ok(url)
     }
 
-    fn prompt_app_port(config: &mut Config) -> Result<u16, Box<dyn std::error::Error>> {
+    fn prompt_app_port(config: &mut Config) -> Result<u16> {
         let existing_port = config.get("APP_PORT");
 
         print!("Enter the port your app exposes inside the container");
@@ -95,7 +96,7 @@ impl DeployCommand {
         Ok(port)
     }
 
-    fn build_and_save_image(&self, app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_and_save_image(&self, app_name: &str) -> Result<()> {
         println!("Building Docker image for ARM64...");
         let cmd = CommandExecutor::new();
 
@@ -109,7 +110,7 @@ impl DeployCommand {
         ])?;
 
         if status != 0 {
-            return Err(format!("Failed to build Docker image: {}", output).into());
+            return Err(anyhow!("Failed to build Docker image: {}", output));
         }
 
         println!("✓ Docker image built successfully");
@@ -124,7 +125,7 @@ impl DeployCommand {
         ])?;
 
         if status != 0 {
-            return Err(format!("Failed to save Docker image: {}", output).into());
+            return Err(anyhow!("Failed to save Docker image: {}", output));
         }
 
         println!("✓ Docker image saved to {}.tar", app_name);
@@ -152,7 +153,7 @@ networks:
 "#)
     }
 
-    fn deploy_app(&self, client: &SshClient, app_name: &str, url: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    fn deploy_app(&self, client: &SshClient, app_name: &str, url: &str, port: u16) -> Result<()> {
         println!("Creating app directory on VPS...");
         let app_dir = format!("/opt/minion/{}", app_name);
 
@@ -165,7 +166,7 @@ networks:
         for cmd in setup_commands {
             let (output, status) = client.execute_command(cmd)?;
             if status != 0 {
-                return Err(format!("Failed to execute command {}: {}", cmd, output).into());
+                return Err(anyhow!("Failed to execute command {}: {}", cmd, output));
             }
         }
 
@@ -182,7 +183,7 @@ networks:
 
         let (output, status) = client.execute_command(&write_compose)?;
         if status != 0 {
-            return Err(format!("Failed to create docker-compose.yml: {}", output).into());
+            return Err(anyhow!("Failed to create docker-compose.yml: {}", output));
         }
 
         println!("✓ Docker compose file created");
@@ -201,7 +202,7 @@ networks:
         for cmd in deploy_commands {
             let (output, status) = client.execute_command(cmd)?;
             if status != 0 {
-                return Err(format!("Failed to execute command {}: {}", cmd, output).into());
+                return Err(anyhow!("Failed to execute command {}: {}", cmd, output));
             }
         }
 
@@ -213,10 +214,10 @@ networks:
         Ok(())
     }
 
-    fn load_args(config: &mut Config) -> Result<(String, String, String, u16), Box<dyn std::error::Error>> {
+    fn load_args(config: &mut Config) -> Result<(String, String, String, u16)> {
         // Get host first (immutable read)
         let host = config.get("VPS_HOST")
-            .ok_or("VPS host not found in config")?
+            .ok_or_else(|| anyhow!("VPS host not found in config"))?
             .to_string();
 
         // Get app name with prompt
@@ -229,7 +230,7 @@ networks:
         Ok((host, app_name, url, port))
     }
 
-    pub fn execute(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn execute(&self) -> Result<()> {
         let mut config = Config::new(".minion")?;
 
         // Get all arguments up front

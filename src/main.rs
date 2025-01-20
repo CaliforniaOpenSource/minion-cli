@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod utils;
 
-use commands::{InitCommand, DeployCommand};
+use commands::{SetupCommand, InitCommand, DeployCommand};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -13,6 +13,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Sets up the minion environment on the VPS
+    Setup,
     /// Initialize a new minion project
     Init,
     /// Deploy the current project
@@ -23,6 +25,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Setup => {
+            SetupCommand::new().execute()?;
+        }
         Commands::Init => {
             InitCommand::new().execute()?;
         }

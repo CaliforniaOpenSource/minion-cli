@@ -4,13 +4,14 @@ use std::io::Read;
 use std::path::Path;
 use std::fs::File;
 use std::io::Write;
+use anyhow::Result;
 
 pub struct SshClient {
     session: Session,
 }
 
 impl SshClient {
-    pub fn connect(host: &str, username: &str, password: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn connect(host: &str, username: &str, password: Option<&str>) -> Result<Self> {
         let host_with_port = if host.contains(":") {
             host.to_string()
         } else {
@@ -31,7 +32,7 @@ impl SshClient {
         Ok(SshClient { session })
     }
 
-    pub fn execute_command(&self, command: &str) -> Result<(String, i32), Box<dyn std::error::Error>> {
+    pub fn execute_command(&self, command: &str) -> Result<(String, i32)> {
         let mut channel = self.session.channel_session()?;
         channel.exec(command)?;
 
@@ -44,7 +45,7 @@ impl SshClient {
         Ok((output, exit_status))
     }
 
-    pub fn copy_file(&self, local_path: &str, remote_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn copy_file(&self, local_path: &str, remote_path: &str) -> Result<()> {
         let mut local_file = File::open(local_path)?;
         let mut contents = Vec::new();
         local_file.read_to_end(&mut contents)?;
@@ -71,12 +72,10 @@ mod tests {
     use super::*;
     use std::borrow::Cow;
     use std::collections::HashMap;
-    use std::{thread, time::Duration};
 
     use testcontainers::{
         core::{IntoContainerPort, WaitFor, ContainerPort},
         runners::SyncRunner,
-        GenericImage,
         Image,
     };
 

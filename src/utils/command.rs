@@ -1,4 +1,5 @@
 use std::process::Command;
+use anyhow::Result;
 
 pub struct CommandExecutor;
 
@@ -7,7 +8,7 @@ impl CommandExecutor {
         CommandExecutor
     }
 
-    pub fn execute(&self, command: &str, args: &[&str]) -> Result<(String, i32), Box<dyn std::error::Error>> {
+    pub fn execute(&self, command: &str, args: &[&str]) -> Result<(String, i32)> {
         let output = Command::new(command)
             .args(args)
             .output()?;
