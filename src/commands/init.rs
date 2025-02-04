@@ -46,7 +46,7 @@ impl InitCommand {
         )?;
 
         let url = Self::prompt_with_default(
-            "Enter the URL for the app (e.g., app.example.com)",
+            "Enter the URL for the app (e.g., app.example.com, subdomain.example.com, etc.)",
             existing_url
         )?;
 

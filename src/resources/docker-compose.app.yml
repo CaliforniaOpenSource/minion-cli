@@ -6,7 +6,7 @@ services:
       - traefik_network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.{{app_name}}.rule=Host(`{{url}}`)"
+      - "traefik.http.routers.{{app_name}}.rule={{host_rules}}"
       - "traefik.http.routers.{{app_name}}.entrypoints=websecure"
       - "traefik.http.routers.{{app_name}}.tls.certresolver=letsencrypt"
       - "traefik.http.services.{{app_name}}.loadbalancer.server.port={{port}}"

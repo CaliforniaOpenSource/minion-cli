@@ -14,7 +14,12 @@ impl DeployCommand {
         DeployCommand
     }
 
-    fn deploy_app(&self, client: &SshClient, app_name: &str, url: &str, port: u16) -> Result<()> {
+    fn deploy_app(&self, client: &SshClient, app_name: &str, urls: &str, port: u16) -> Result<()> {
+        let url_list: Vec<&str> = urls.split(',').collect();
+        if url_list.is_empty() {
+            return Err(anyhow!("At least one URL must be provided"));
+        }
+
         // Build and save the Docker image
         println!("Building Docker image for ARM64...");
         let cmd = CommandExecutor::new();
@@ -78,10 +83,16 @@ impl DeployCommand {
             }
         }
 
+        let host_rules = url_list
+            .iter()
+            .map(|url| format!("Host(`{}`)", url))
+            .collect::<Vec<_>>()
+            .join(" || ");
+
         // Generate and upload docker-compose file
         let compose_content = APP_DOCKER_COMPOSE
             .replace("{{app_name}}", app_name)
-            .replace("{{url}}", url)
+            .replace("{{host_rules}}", &host_rules)
             .replace("{{port}}", &port.to_string());
         let compose_path = format!("{}/docker-compose.yml", app_dir);
 
@@ -117,7 +128,7 @@ impl DeployCommand {
         }
 
         println!("✓ Application deployed successfully!");
-        println!("✓ Your app should be available at https://{} shortly", url);
+        println!("✓ Your app should be available at https://{} shortly", url_list[0]);
         Ok(())
     }
 
