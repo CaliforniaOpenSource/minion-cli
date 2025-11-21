@@ -10,6 +10,7 @@ services:
       - "traefik.http.routers.{{app_name}}.entrypoints=websecure"
       - "traefik.http.routers.{{app_name}}.tls.certresolver=letsencrypt"
       - "traefik.http.services.{{app_name}}.loadbalancer.server.port={{port}}"
+{{volumes_section}}
 
 networks:
   traefik_network:
