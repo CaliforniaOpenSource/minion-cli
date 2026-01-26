@@ -13,9 +13,12 @@ impl CommandExecutor {
             .args(args)
             .output()?;
 
-        let stdout = String::from_utf8(output.stdout)?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_status = output.status.code().unwrap_or(-1);
 
-        Ok((stdout, exit_status))
+        let combined_output = format!("{}{}", stdout, stderr);
+
+        Ok((combined_output, exit_status))
     }
 }
