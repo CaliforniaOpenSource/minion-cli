@@ -205,7 +205,7 @@ impl DeployCommand {
         })
     }
 
-    fn load_args() -> anyhow::Result<(String, String, String, String, String)> {
+    fn load_args(use_defaults: bool) -> anyhow::Result<(String, String, String, String, String)> {
         let config = Config::new(".minion")?;
         let existing_host = config.get("VPS_HOST");
         let existing_name = config.get("APP_NAME");
@@ -213,38 +213,43 @@ impl DeployCommand {
         let existing_port = config.get("APP_PORT");
         let existing_volumes = config.get("APP_VOLUMES");
 
-        let host = Self::prompt_with_default("Enter VPS hostname or IP address", existing_host)?;
+        if use_defaults {
+            Ok((
+                existing_host.cloned().unwrap_or_default(),
+                existing_name.cloned().unwrap_or_default(),
+                existing_url.cloned().unwrap_or_default(),
+                existing_port.cloned().unwrap_or_default(),
+                existing_volumes.cloned().unwrap_or_default(),
+            ))
+        } else {
+            let host = Self::prompt_with_default("Enter VPS hostname or IP address", existing_host)?;
+            let name = Self::prompt_with_default("Enter app name", existing_name)?;
+            let url = Self::prompt_with_default(
+                "Enter the URL for the app (e.g., app.example.com)",
+                existing_url,
+            )?;
+            let port =
+                Self::prompt_with_default("Enter the port for the app (e.g., 8000)", existing_port)?;
+            let volumes = Self::prompt_with_default(
+                "Enter volume mappings (local:remote, comma separated)",
+                existing_volumes,
+            )?;
 
-        let name = Self::prompt_with_default("Enter app name", existing_name)?;
+            // Save config for next time
+            let mut config = Config::new(".minion")?;
+            config.set("VPS_HOST".to_string(), host.clone());
+            config.set("APP_NAME".to_string(), name.clone());
+            config.set("APP_URL".to_string(), url.clone());
+            config.set("APP_PORT".to_string(), port.clone());
+            config.set("APP_VOLUMES".to_string(), volumes.clone());
+            config.save()?;
 
-        let url = Self::prompt_with_default(
-            "Enter the URL for the app (e.g., app.example.com)",
-            existing_url,
-        )?;
-
-        let port =
-            Self::prompt_with_default("Enter the port for the app (e.g., 8000)", existing_port)?;
-
-        let volumes = Self::prompt_with_default(
-            "Enter volume mappings (local:remote, comma separated)",
-            existing_volumes,
-        )?;
-
-        // Save both configs
-        let mut config = Config::new(".minion")?;
-        config.set("VPS_HOST".to_string(), host.clone());
-        config.set("APP_NAME".to_string(), name.clone());
-        config.set("APP_URL".to_string(), url.clone());
-        config.set("APP_PORT".to_string(), port.clone());
-        config.set("APP_VOLUMES".to_string(), volumes.clone());
-        config.save()?;
-
-        Ok((host, name, url, port, volumes))
+            Ok((host, name, url, port, volumes))
+        }
     }
 
-    pub fn execute(&self) -> Result<()> {
-        // Get all arguments up front
-        let (host, app_name, url, port, volumes) = Self::load_args()?;
+    pub fn execute(&self, use_defaults: bool) -> Result<()> {
+        let (host, app_name, url, port, volumes) = Self::load_args(use_defaults)?;
         let port = port.parse::<u16>()?;
 
         println!("Connecting to {}...", host);

@@ -48,6 +48,9 @@ Install Minion CLI globally on your system:
 git clone https://github.com/CaliforniaOpenSource/minion-cli.git
 cd minion-cli
 
+# Build the project
+cargo build --release
+
 # Install the binary
 cargo install --path .
 ```
@@ -106,6 +109,12 @@ Deploy your application to the VPS:
 minion deploy
 ```
 
+Use `-y` or `--yes` to skip prompts and use values from `.minion`:
+
+```bash
+minion deploy -y
+```
+
 This command will:
 1. Build a Docker image locally
 2. Save and transfer the image to your VPS
@@ -137,6 +146,8 @@ minion deploy
 # When prompted for volumes:
 # Enter: data:/app/data,uploads:/app/uploads
 ```
+
+Or use `minion deploy -y` to use the volumes already saved in `.minion`.
 
 This maps:
 - `/opt/minion/your-app/volumes/data` on VPS → `/app/data` in container

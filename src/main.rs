@@ -17,8 +17,12 @@ enum Commands {
     Setup,
     /// Initialize a new minion project
     Init,
-    /// Deploy the current project
-    Deploy,
+    /// Deploy the current project. Use -y to skip prompts and use .minion defaults
+    Deploy {
+        /// Use defaults from .minion config 
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,8 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Init => {
             InitCommand::new().execute()?;
         }
-        Commands::Deploy => {
-            DeployCommand::new().execute()?;
+        Commands::Deploy { yes } => {
+            DeployCommand::new().execute(yes)?;
         }
     }
 
