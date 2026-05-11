@@ -1,7 +1,9 @@
-mod setup;
-mod init;
+mod control;
 mod deploy;
+mod init;
+mod setup;
 
-pub use setup::SetupCommand;
+pub use control::{ControlAction, ControlCommand};
+pub use deploy::{DeployCommand, DeployOptions};
 pub use init::InitCommand;
-pub use deploy::DeployCommand;
+pub use setup::SetupCommand;

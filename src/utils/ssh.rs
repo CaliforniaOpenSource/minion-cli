@@ -1,17 +1,35 @@
-use ssh2::Session;
-use std::net::TcpStream;
-use std::io::Read;
-use std::path::Path;
-use std::fs::File;
-use std::io::Write;
 use anyhow::Result;
+use std::fs::File;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpStream;
+use std::path::Path;
+
+use ssh2::Session;
 
 pub struct SshClient {
     session: Session,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SshAuth {
+    pub password: Option<String>,
+    pub key_path: Option<String>,
+    pub private_key: Option<String>,
+    pub passphrase: Option<String>,
+}
+
 impl SshClient {
     pub fn connect(host: &str, username: &str, password: Option<&str>) -> Result<Self> {
+        let auth = SshAuth {
+            password: password.map(ToOwned::to_owned),
+            ..Default::default()
+        };
+
+        Self::connect_with_auth(host, username, &auth)
+    }
+
+    pub fn connect_with_auth(host: &str, username: &str, auth: &SshAuth) -> Result<Self> {
         let host_with_port = if host.contains(":") {
             host.to_string()
         } else {
@@ -23,7 +41,21 @@ impl SshClient {
         session.set_tcp_stream(tcp);
         session.handshake()?;
 
-        if let Some(pass) = password {
+        if let Some(private_key) = &auth.private_key {
+            session.userauth_pubkey_memory(
+                username,
+                None,
+                private_key,
+                auth.passphrase.as_deref(),
+            )?;
+        } else if let Some(key_path) = &auth.key_path {
+            session.userauth_pubkey_file(
+                username,
+                None,
+                Path::new(key_path),
+                auth.passphrase.as_deref(),
+            )?;
+        } else if let Some(pass) = &auth.password {
             session.userauth_password(username, pass)?;
         } else {
             session.userauth_agent(username)?;
@@ -45,17 +77,33 @@ impl SshClient {
         Ok((output, exit_status))
     }
 
+    pub fn execute_command_stream(&self, command: &str) -> Result<i32> {
+        let mut channel = self.session.channel_session()?;
+        channel.exec(command)?;
+
+        let mut buffer = [0; 8192];
+        loop {
+            let bytes_read = channel.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            print!("{}", String::from_utf8_lossy(&buffer[..bytes_read]));
+            std::io::stdout().flush()?;
+        }
+
+        channel.wait_close()?;
+        Ok(channel.exit_status()?)
+    }
+
     pub fn copy_file(&self, local_path: &str, remote_path: &str) -> Result<()> {
         let mut local_file = File::open(local_path)?;
         let mut contents = Vec::new();
         local_file.read_to_end(&mut contents)?;
 
-        let mut remote_file = self.session.scp_send(
-            Path::new(remote_path),
-            0o644,
-            contents.len() as u64,
-            None,
-        )?;
+        let mut remote_file =
+            self.session
+                .scp_send(Path::new(remote_path), 0o644, contents.len() as u64, None)?;
 
         remote_file.write_all(&contents)?;
         remote_file.send_eof()?;
@@ -74,7 +122,7 @@ mod tests {
     use std::collections::HashMap;
 
     use testcontainers::{
-        core::{IntoContainerPort, WaitFor, ContainerPort},
+        core::{ContainerPort, IntoContainerPort, WaitFor},
         runners::SyncRunner,
         Image,
     };
@@ -91,12 +139,14 @@ mod tests {
             env_vars.insert("USER_NAME".to_string(), "testuser".to_string());
             env_vars.insert("USER_PASSWORD".to_string(), "testpass".to_string());
             let exposed_ports = vec![2222.tcp()];
-            Self { env_vars, exposed_ports }
+            Self {
+                env_vars,
+                exposed_ports,
+            }
         }
     }
 
     impl Image for OpenSshServerContainer {
-
         fn name(&self) -> &str {
             "linuxserver/openssh-server"
         }
@@ -113,7 +163,9 @@ mod tests {
             &self.exposed_ports
         }
 
-        fn env_vars(&self) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
+        fn env_vars(
+            &self,
+        ) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
             Box::new(self.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         }
     }
@@ -124,14 +176,13 @@ mod tests {
         let container = image.start().unwrap();
 
         let port = container.get_host_port_ipv4(2222).unwrap();
-        let client = SshClient::connect(
-            &format!("localhost:{}", port),
-            "testuser",
-            Some("testpass")
-        ).expect("Failed to connect");
+        let client =
+            SshClient::connect(&format!("localhost:{}", port), "testuser", Some("testpass"))
+                .expect("Failed to connect");
 
         // Test command execution
-        let (output, status) = client.execute_command("echo 'hello world'")
+        let (output, status) = client
+            .execute_command("echo 'hello world'")
             .expect("Failed to execute command");
         assert_eq!(status, 0);
         assert_eq!(output.trim(), "hello world");

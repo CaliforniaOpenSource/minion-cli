@@ -115,6 +115,12 @@ Use `-y` or `--yes` to skip prompts and use values from `.minion`:
 minion deploy -y
 ```
 
+Use `--ci` to fail instead of prompting when required configuration is missing:
+
+```bash
+minion deploy --ci
+```
+
 This command will:
 1. Build a Docker image locally
 2. Save and transfer the image to your VPS
@@ -137,6 +143,179 @@ VPS_HOST=167.99.231.125
 ```
 
 This file is automatically created by `minion init` and updated by `minion deploy`.
+
+## CI / Environment Configuration
+
+For CI flows such as GitHub Actions, Minion can run without prompts. Configuration resolves in this order:
+
+```
+CLI flags > environment variables > .minion file > interactive prompts
+```
+
+Supported environment variables:
+
+```
+MINION_VPS_HOST=167.99.231.125
+MINION_APP_NAME=my-app
+MINION_APP_URL=app.example.com
+MINION_APP_PORT=3000
+MINION_APP_VOLUMES=data:/app/data,uploads:/app/uploads
+MINION_SSH_USER=minion
+MINION_SSH_KEY_PATH=/path/to/private/key
+MINION_SSH_PRIVATE_KEY="-----BEGIN OPENSSH PRIVATE KEY-----..."
+MINION_SSH_PASSWORD=
+MINION_SSH_PASSPHRASE=
+MINION_DOCKER_PLATFORM=linux/amd64
+```
+
+Example GitHub Actions deploy step:
+
+```yaml
+- name: Deploy with Minion
+  env:
+    MINION_VPS_HOST: ${{ secrets.MINION_VPS_HOST }}
+    MINION_APP_NAME: my-app
+    MINION_APP_URL: app.example.com
+    MINION_APP_PORT: "3000"
+    MINION_SSH_PRIVATE_KEY: ${{ secrets.MINION_SSH_PRIVATE_KEY }}
+  run: minion deploy --ci
+```
+
+You can also pass values as CLI flags:
+
+```bash
+minion deploy --ci \
+  --host 167.99.231.125 \
+  --app my-app \
+  --url app.example.com \
+  --port 3000
+```
+
+## Server Control
+
+After deployment, Minion can inspect and control the app through SSH and Docker Compose.
+
+These commands operate on `/opt/minion/<app-name>` on the VPS. They do not rebuild or redeploy the app; they control the Compose project that `minion deploy` already created.
+
+Server control commands resolve configuration from:
+
+```
+CLI flags > environment variables > .minion file
+```
+
+They do not prompt for missing values. At minimum, they need:
+
+- VPS host: `--host`, `MINION_VPS_HOST`, or `VPS_HOST` in `.minion`
+- App name: `--app`, `MINION_APP_NAME`, or `APP_NAME` in `.minion`
+
+### Shared Options
+
+All server control commands accept these options:
+
+| Option | Environment Variable | Description |
+| --- | --- | --- |
+| `--host <HOST>` | `MINION_VPS_HOST` | VPS hostname or IP address |
+| `--app <APP_NAME>` | `MINION_APP_NAME` | App name deployed under `/opt/minion/<app-name>` |
+| `--ssh-user <SSH_USER>` | `MINION_SSH_USER` | SSH user, defaults to `minion` |
+| `--ssh-key-path <PATH>` | `MINION_SSH_KEY_PATH` | Path to an SSH private key |
+| `--ssh-private-key <KEY>` | `MINION_SSH_PRIVATE_KEY` | SSH private key content, useful in CI |
+| `--ssh-password <PASSWORD>` | `MINION_SSH_PASSWORD` | SSH password authentication |
+| `--ssh-passphrase <PASSPHRASE>` | `MINION_SSH_PASSPHRASE` | Passphrase for the SSH private key |
+
+If no SSH option is provided, Minion uses the local SSH agent.
+
+### Commands
+
+```bash
+minion status
+minion ps
+minion logs
+minion logs --follow
+minion logs --tail 200
+minion restart
+minion stop
+minion start
+minion doctor
+```
+
+#### `minion status`
+
+Shows the current Docker Compose container status for the app, followed by the last 40 log lines.
+
+Use this first when you want a quick read on whether the app is up.
+
+```bash
+minion status
+minion status --host 167.99.231.125 --app my-app
+```
+
+#### `minion ps`
+
+Shows `docker compose ps` for the app.
+
+This is useful when you only want container state without recent logs.
+
+```bash
+minion ps
+```
+
+#### `minion logs`
+
+Shows Docker Compose logs for the app. By default, it prints the last 100 lines.
+
+Additional options:
+
+| Option | Description |
+| --- | --- |
+| `--tail <LINES>` | Number of log lines to show, defaults to `100` |
+| `-f`, `--follow` | Stream logs until interrupted |
+
+Examples:
+
+```bash
+minion logs
+minion logs --tail 300
+minion logs --follow
+```
+
+#### `minion restart`
+
+Restarts the app with `docker compose restart`.
+
+```bash
+minion restart
+```
+
+#### `minion stop`
+
+Stops the app with `docker compose stop`.
+
+```bash
+minion stop
+```
+
+#### `minion start`
+
+Starts the app with `docker compose up -d`.
+
+```bash
+minion start
+```
+
+#### `minion doctor`
+
+Runs basic checks against the VPS and app deployment:
+
+- Docker is installed
+- Docker Compose is available
+- Traefik is running
+- The app's `docker-compose.yml` exists
+
+If all checks pass, it also prints `docker compose ps` for the app.
+
+```bash
+minion doctor
+```
 
 ## Volume Mappings (experimental)
 To persist data, you can specify volume mappings during deployment:
@@ -182,4 +361,3 @@ docker build -t test-build . --platform=linux/amd64
 ```
 
 This will show the full error output.
-

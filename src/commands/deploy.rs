@@ -1,6 +1,5 @@
-use crate::utils::{CommandExecutor, Config, SshClient};
+use crate::utils::{AppConfig, AppConfigOverrides, CommandExecutor, SshClient};
 use anyhow::{anyhow, Result};
-use std::io::{self, Write};
 use std::path::Path;
 use tempfile::Builder;
 
@@ -8,6 +7,13 @@ use tempfile::Builder;
 const APP_DOCKER_COMPOSE: &str = include_str!("../resources/docker-compose.app.yml");
 
 pub struct DeployCommand;
+
+#[derive(Debug, Clone, Default)]
+pub struct DeployOptions {
+    pub yes: bool,
+    pub ci: bool,
+    pub overrides: AppConfigOverrides,
+}
 
 impl DeployCommand {
     pub fn new() -> Self {
@@ -30,14 +36,19 @@ impl DeployCommand {
         Ok(mappings)
     }
 
-    fn deploy_app(&self, client: &SshClient, app_name: &str, urls: &str, port: u16, volumes: &str) -> Result<()> {
-        let url_list: Vec<&str> = urls.split(',').collect();
+    fn deploy_app(&self, client: &SshClient, config: &AppConfig) -> Result<()> {
+        let url_list: Vec<&str> = config
+            .app_url
+            .split(',')
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .collect();
         if url_list.is_empty() {
             return Err(anyhow!("At least one URL must be provided"));
         }
 
         // Build and save the Docker image
-        println!("Building Docker image for ARM64...");
+        println!("Building Docker image for {}...", config.docker_platform);
         let cmd = CommandExecutor::new();
 
         // Build the image with platform specified
@@ -46,9 +57,9 @@ impl DeployCommand {
             &[
                 "build",
                 "-t",
-                &format!("minion_{}", app_name),
+                &format!("minion_{}", config.app_name),
                 ".",
-                "--platform=linux/amd64",
+                &format!("--platform={}", config.docker_platform),
             ],
         )?;
 
@@ -59,10 +70,7 @@ impl DeployCommand {
         println!("✓ Docker image built successfully");
 
         // Create a temporary file with .tar extension
-        let temp_file = Builder::new()
-            .prefix("minion_")
-            .suffix(".tar")
-            .tempfile()?;
+        let temp_file = Builder::new().prefix("minion_").suffix(".tar").tempfile()?;
         let temp_path = temp_file.path().to_string_lossy().to_string();
 
         // Save the image to the temporary file
@@ -73,7 +81,7 @@ impl DeployCommand {
                 "save",
                 "-o",
                 &temp_path,
-                &format!("minion_{}", app_name),
+                &format!("minion_{}", config.app_name),
             ],
         )?;
 
@@ -84,7 +92,7 @@ impl DeployCommand {
         println!("✓ Docker image saved to temporary file");
 
         println!("Creating app directory on VPS...");
-        let app_dir = format!("/opt/minion/{}", app_name);
+        let app_dir = format!("/opt/minion/{}", config.app_name);
         let volumes_dir = format!("{}/volumes", app_dir);
 
         // Create directory and set permissions
@@ -103,19 +111,23 @@ impl DeployCommand {
 
         // Process volumes
         let mut volume_mappings = Vec::new();
-        let parsed_volumes = Self::parse_volumes(volumes)?;
-        
+        let parsed_volumes = Self::parse_volumes(&config.app_volumes)?;
+
         if !parsed_volumes.is_empty() {
             println!("Processing volumes...");
             for (local_name, remote) in parsed_volumes {
                 // Construct the full path on the VPS
                 let vps_path = format!("{}/{}", volumes_dir, local_name);
-                
+
                 // Ensure the directory exists on the VPS
                 let mkdir_cmd = format!("sudo mkdir -p {}", vps_path);
                 let (output, status) = client.execute_command(&mkdir_cmd)?;
                 if status != 0 {
-                    return Err(anyhow!("Failed to create volume directory {}: {}", vps_path, output));
+                    return Err(anyhow!(
+                        "Failed to create volume directory {}: {}",
+                        vps_path,
+                        output
+                    ));
                 }
 
                 // Ensure permissions
@@ -123,10 +135,7 @@ impl DeployCommand {
                 client.execute_command(&chown_cmd)?;
 
                 // Add to mappings
-                volume_mappings.push(format!(
-                    "      - {}:{}",
-                    vps_path, remote
-                ));
+                volume_mappings.push(format!("      - {}:{}", vps_path, remote));
             }
         }
 
@@ -144,9 +153,9 @@ impl DeployCommand {
 
         // Generate and upload docker-compose file
         let compose_content = APP_DOCKER_COMPOSE
-            .replace("{{app_name}}", app_name)
+            .replace("{{app_name}}", &config.app_name)
             .replace("{{host_rules}}", &host_rules)
-            .replace("{{port}}", &port.to_string())
+            .replace("{{port}}", &config.app_port)
             .replace("{{volumes_section}}", &volumes_section);
         let compose_path = format!("{}/docker-compose.yml", app_dir);
 
@@ -162,15 +171,12 @@ impl DeployCommand {
 
         // Copy the image file to the VPS
         println!("Copying Docker image to VPS...");
-        client.copy_file(
-            &temp_path,
-            &format!("{}/{}.tar", app_dir, app_name),
-        )?;
+        client.copy_file(&temp_path, &format!("{}/{}.tar", app_dir, config.app_name))?;
 
         // Load the image and clean up
         let deploy_commands = [
-            &format!("cd {} && docker load -i {}.tar", app_dir, app_name),
-            &format!("rm {}/{}.tar", app_dir, app_name),
+            &format!("cd {} && docker load -i {}.tar", app_dir, config.app_name),
+            &format!("rm {}/{}.tar", app_dir, config.app_name),
             &format!("cd {} && docker compose up -d", app_dir),
         ];
 
@@ -182,77 +188,17 @@ impl DeployCommand {
         }
 
         println!("✓ Application deployed successfully!");
-        println!("✓ Your app should be available at https://{} shortly", url_list[0]);
+        println!(
+            "✓ Your app should be available at https://{} shortly",
+            url_list[0]
+        );
         Ok(())
     }
 
-    fn prompt_with_default(prompt: &str, default: Option<&String>) -> anyhow::Result<String> {
-        print!("{}", prompt);
-        if let Some(default_val) = default {
-            print!(" [{}]", default_val);
-        }
-        print!(": ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        Ok(if input.is_empty() {
-            default.cloned().unwrap_or_default()
-        } else {
-            input.to_string()
-        })
-    }
-
-    fn load_args(use_defaults: bool) -> anyhow::Result<(String, String, String, String, String)> {
-        let config = Config::new(".minion")?;
-        let existing_host = config.get("VPS_HOST");
-        let existing_name = config.get("APP_NAME");
-        let existing_url = config.get("APP_URL");
-        let existing_port = config.get("APP_PORT");
-        let existing_volumes = config.get("APP_VOLUMES");
-
-        if use_defaults {
-            Ok((
-                existing_host.cloned().unwrap_or_default(),
-                existing_name.cloned().unwrap_or_default(),
-                existing_url.cloned().unwrap_or_default(),
-                existing_port.cloned().unwrap_or_default(),
-                existing_volumes.cloned().unwrap_or_default(),
-            ))
-        } else {
-            let host = Self::prompt_with_default("Enter VPS hostname or IP address", existing_host)?;
-            let name = Self::prompt_with_default("Enter app name", existing_name)?;
-            let url = Self::prompt_with_default(
-                "Enter the URL for the app (e.g., app.example.com)",
-                existing_url,
-            )?;
-            let port =
-                Self::prompt_with_default("Enter the port for the app (e.g., 8000)", existing_port)?;
-            let volumes = Self::prompt_with_default(
-                "Enter volume mappings (local:remote, comma separated)",
-                existing_volumes,
-            )?;
-
-            // Save config for next time
-            let mut config = Config::new(".minion")?;
-            config.set("VPS_HOST".to_string(), host.clone());
-            config.set("APP_NAME".to_string(), name.clone());
-            config.set("APP_URL".to_string(), url.clone());
-            config.set("APP_PORT".to_string(), port.clone());
-            config.set("APP_VOLUMES".to_string(), volumes.clone());
-            config.save()?;
-
-            Ok((host, name, url, port, volumes))
-        }
-    }
-
-    pub fn execute(&self, use_defaults: bool) -> Result<()> {
-        let (host, app_name, url, port, volumes) = Self::load_args(use_defaults)?;
-        let port = port.parse::<u16>()?;
-
-        println!("Connecting to {}...", host);
+    pub fn execute(&self, options: DeployOptions) -> Result<()> {
+        let interactive = !(options.yes || options.ci);
+        let config = AppConfig::load(options.overrides, interactive, interactive)?;
+        config.require_deploy()?;
 
         // Verify dockerfile before proceeding
         if !Path::new("Dockerfile").exists() {
@@ -261,8 +207,10 @@ impl DeployCommand {
         println!("✓ Dockerfile found");
 
         // Connect to VPS and deploy
-        let client = SshClient::connect(&host, "minion", None)?;
-        self.deploy_app(&client, &app_name, &url, port, &volumes)?;
+        println!("Connecting to {} as {}...", config.host, config.ssh_user);
+        let client =
+            SshClient::connect_with_auth(&config.host, &config.ssh_user, &config.ssh_auth())?;
+        self.deploy_app(&client, &config)?;
 
         Ok(())
     }
@@ -282,7 +230,7 @@ mod tests {
     fn test_parse_volumes_valid() {
         let volumes = "my-vol:/remote/path,local:/other/remote";
         let mappings = DeployCommand::parse_volumes(volumes).unwrap();
-        
+
         assert_eq!(mappings.len(), 2);
         assert_eq!(mappings[0].0, "my-vol");
         assert_eq!(mappings[0].1, "/remote/path");
