@@ -1,7 +1,11 @@
-use std::process::Command;
 use anyhow::Result;
+use std::process::Command;
 
 pub struct CommandExecutor;
+
+pub trait LocalCommandRunner {
+    fn execute(&self, command: &str, args: &[&str]) -> Result<(String, i32)>;
+}
 
 impl CommandExecutor {
     pub fn new() -> Self {
@@ -9,9 +13,13 @@ impl CommandExecutor {
     }
 
     pub fn execute(&self, command: &str, args: &[&str]) -> Result<(String, i32)> {
-        let output = Command::new(command)
-            .args(args)
-            .output()?;
+        <Self as LocalCommandRunner>::execute(self, command, args)
+    }
+}
+
+impl LocalCommandRunner for CommandExecutor {
+    fn execute(&self, command: &str, args: &[&str]) -> Result<(String, i32)> {
+        let output = Command::new(command).args(args).output()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();

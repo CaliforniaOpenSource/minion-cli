@@ -7,6 +7,8 @@ use std::path::Path;
 
 use ssh2::Session;
 
+use super::RemoteClient;
+
 pub struct SshClient {
     session: Session,
 }
@@ -65,6 +67,12 @@ impl SshClient {
     }
 
     pub fn execute_command(&self, command: &str) -> Result<(String, i32)> {
+        <Self as RemoteClient>::execute_command(self, command)
+    }
+}
+
+impl RemoteClient for SshClient {
+    fn execute_command(&self, command: &str) -> Result<(String, i32)> {
         let mut channel = self.session.channel_session()?;
         channel.exec(command)?;
 
@@ -77,7 +85,7 @@ impl SshClient {
         Ok((output, exit_status))
     }
 
-    pub fn execute_command_stream(&self, command: &str) -> Result<i32> {
+    fn execute_command_stream(&self, command: &str) -> Result<i32> {
         let mut channel = self.session.channel_session()?;
         channel.exec(command)?;
 
@@ -96,7 +104,7 @@ impl SshClient {
         Ok(channel.exit_status()?)
     }
 
-    pub fn copy_file(&self, local_path: &str, remote_path: &str) -> Result<()> {
+    fn copy_file(&self, local_path: &str, remote_path: &str) -> Result<()> {
         let mut local_file = File::open(local_path)?;
         let mut contents = Vec::new();
         local_file.read_to_end(&mut contents)?;
@@ -118,6 +126,7 @@ impl SshClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::RemoteClient;
     use std::borrow::Cow;
     use std::collections::HashMap;
 
@@ -186,8 +195,47 @@ mod tests {
             .expect("Failed to execute command");
         assert_eq!(status, 0);
         assert_eq!(output.trim(), "hello world");
+    }
 
-        // // Test file copy
-        // // TODO: Add file copy test
+    #[test]
+    fn test_ssh_copy_file() {
+        let image = OpenSshServerContainer::default();
+        let container = image.start().unwrap();
+
+        let port = container.get_host_port_ipv4(2222).unwrap();
+        let client =
+            SshClient::connect(&format!("localhost:{}", port), "testuser", Some("testpass"))
+                .expect("Failed to connect");
+
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp_file.path(), "copied over ssh").unwrap();
+
+        RemoteClient::copy_file(
+            &client,
+            temp_file.path().to_str().unwrap(),
+            "/tmp/minion-copy-test.txt",
+        )
+        .expect("Failed to copy file");
+
+        let (output, status) = client
+            .execute_command("cat /tmp/minion-copy-test.txt")
+            .expect("Failed to read copied file");
+        assert_eq!(status, 0);
+        assert_eq!(output.trim(), "copied over ssh");
+    }
+
+    #[test]
+    fn test_ssh_password_auth_failure() {
+        let image = OpenSshServerContainer::default();
+        let container = image.start().unwrap();
+
+        let port = container.get_host_port_ipv4(2222).unwrap();
+        let result = SshClient::connect(
+            &format!("localhost:{}", port),
+            "testuser",
+            Some("wrong-password"),
+        );
+
+        assert!(result.is_err());
     }
 }

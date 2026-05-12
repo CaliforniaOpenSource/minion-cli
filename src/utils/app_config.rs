@@ -42,8 +42,16 @@ impl AppConfig {
         interactive: bool,
         save_interactive: bool,
     ) -> Result<Self> {
-        let config = Config::new(CONFIG_FILE)?;
+        Self::load_from_file(CONFIG_FILE, overrides, interactive, save_interactive)
+    }
 
+    fn load_from_file(
+        file_path: &str,
+        overrides: AppConfigOverrides,
+        interactive: bool,
+        save_interactive: bool,
+    ) -> Result<Self> {
+        let config = Config::new(file_path)?;
         let mut host = pick(overrides.host, "MINION_VPS_HOST", &config, "VPS_HOST");
         let mut app_name = pick(overrides.app_name, "MINION_APP_NAME", &config, "APP_NAME");
         let mut app_url = pick(overrides.app_url, "MINION_APP_URL", &config, "APP_URL");
@@ -109,7 +117,7 @@ impl AppConfig {
         };
 
         if interactive && save_interactive {
-            app_config.save_app_file()?;
+            app_config.save_app_file(file_path)?;
         }
 
         Ok(app_config)
@@ -145,8 +153,8 @@ impl AppConfig {
         }
     }
 
-    fn save_app_file(&self) -> Result<()> {
-        let mut config = Config::new(CONFIG_FILE)?;
+    fn save_app_file(&self, file_path: &str) -> Result<()> {
+        let mut config = Config::new(file_path)?;
         config.set("VPS_HOST".to_string(), self.host.clone());
         config.set("APP_NAME".to_string(), self.app_name.clone());
         config.set("APP_URL".to_string(), self.app_url.clone());
@@ -241,6 +249,82 @@ fn is_safe_name_char(value: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+    use tempfile::NamedTempFile;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    const ENV_KEYS: &[&str] = &[
+        "MINION_VPS_HOST",
+        "MINION_APP_NAME",
+        "MINION_APP_URL",
+        "MINION_APP_PORT",
+        "MINION_APP_VOLUMES",
+        "MINION_SSH_USER",
+        "MINION_SSH_KEY_PATH",
+        "MINION_SSH_PRIVATE_KEY",
+        "MINION_SSH_PASSWORD",
+        "MINION_SSH_PASSPHRASE",
+        "MINION_DOCKER_PLATFORM",
+    ];
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            let lock = ENV_LOCK.lock().unwrap();
+            let previous = ENV_KEYS
+                .iter()
+                .map(|key| (*key, env::var(key).ok()))
+                .collect::<Vec<_>>();
+
+            for key in ENV_KEYS {
+                env::remove_var(key);
+            }
+
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                if let Some(value) = value {
+                    env::set_var(key, value);
+                } else {
+                    env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    fn config_file(content: &str) -> NamedTempFile {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), content).unwrap();
+        file
+    }
+
+    fn valid_config() -> AppConfig {
+        AppConfig {
+            host: "example.com".to_string(),
+            app_name: "my-app".to_string(),
+            app_url: "app.example.com".to_string(),
+            app_port: "3000".to_string(),
+            app_volumes: String::new(),
+            ssh_user: "minion".to_string(),
+            ssh_key_path: None,
+            ssh_private_key: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            docker_platform: "linux/amd64".to_string(),
+        }
+    }
 
     #[test]
     fn clean_trims_and_rejects_empty_values() {
@@ -261,39 +345,185 @@ mod tests {
     }
 
     #[test]
+    fn cli_overrides_beat_env_and_minion_file() {
+        let _guard = EnvGuard::new();
+        env::set_var("MINION_VPS_HOST", "env-host");
+        let file = config_file("VPS_HOST=file-host\n");
+
+        let config = AppConfig::load_from_file(
+            file.path().to_str().unwrap(),
+            AppConfigOverrides {
+                host: Some("cli-host".to_string()),
+                ..Default::default()
+            },
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(config.host, "cli-host");
+    }
+
+    #[test]
+    fn env_vars_beat_minion_file() {
+        let _guard = EnvGuard::new();
+        env::set_var("MINION_APP_NAME", "env-app");
+        env::set_var("MINION_DOCKER_PLATFORM", "linux/arm64");
+        let file = config_file("APP_NAME=file-app\nDOCKER_PLATFORM=linux/amd64\n");
+
+        let config = AppConfig::load_from_file(
+            file.path().to_str().unwrap(),
+            AppConfigOverrides::default(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(config.app_name, "env-app");
+        assert_eq!(config.docker_platform, "linux/arm64");
+    }
+
+    #[test]
+    fn minion_file_is_used_without_cli_or_env_values() {
+        let _guard = EnvGuard::new();
+        let file = config_file(
+            "VPS_HOST=file-host\nAPP_NAME=file-app\nAPP_URL=file.example.com\nAPP_PORT=8080\nAPP_VOLUMES=data:/data\nDOCKER_PLATFORM=linux/arm64\n",
+        );
+
+        let config = AppConfig::load_from_file(
+            file.path().to_str().unwrap(),
+            AppConfigOverrides::default(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(config.host, "file-host");
+        assert_eq!(config.app_name, "file-app");
+        assert_eq!(config.app_url, "file.example.com");
+        assert_eq!(config.app_port, "8080");
+        assert_eq!(config.app_volumes, "data:/data");
+        assert_eq!(config.docker_platform, "linux/arm64");
+    }
+
+    #[test]
+    fn ssh_auth_defaults_to_agent_when_no_auth_values_exist() {
+        let config = valid_config();
+        let auth = config.ssh_auth();
+
+        assert_eq!(config.ssh_user, "minion");
+        assert_eq!(auth.key_path, None);
+        assert_eq!(auth.private_key, None);
+        assert_eq!(auth.password, None);
+        assert_eq!(auth.passphrase, None);
+    }
+
+    #[test]
+    fn ssh_auth_values_are_loaded_from_overrides() {
+        let _guard = EnvGuard::new();
+        let file = config_file("");
+
+        let config = AppConfig::load_from_file(
+            file.path().to_str().unwrap(),
+            AppConfigOverrides {
+                ssh_user: Some("deploy".to_string()),
+                ssh_key_path: Some("/tmp/key".to_string()),
+                ssh_private_key: Some("private-key".to_string()),
+                ssh_password: Some("password".to_string()),
+                ssh_passphrase: Some("passphrase".to_string()),
+                ..Default::default()
+            },
+            false,
+            false,
+        )
+        .unwrap();
+        let auth = config.ssh_auth();
+
+        assert_eq!(config.ssh_user, "deploy");
+        assert_eq!(auth.key_path, Some("/tmp/key".to_string()));
+        assert_eq!(auth.private_key, Some("private-key".to_string()));
+        assert_eq!(auth.password, Some("password".to_string()));
+        assert_eq!(auth.passphrase, Some("passphrase".to_string()));
+    }
+
+    #[test]
+    fn private_key_env_converts_escaped_newlines() {
+        let _guard = EnvGuard::new();
+        env::set_var("MINION_SSH_PRIVATE_KEY", "line1\\nline2");
+        let file = config_file("");
+
+        let config = AppConfig::load_from_file(
+            file.path().to_str().unwrap(),
+            AppConfigOverrides::default(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.ssh_auth().private_key,
+            Some("line1\nline2".to_string())
+        );
+    }
+
+    #[test]
     fn deploy_config_requires_deploy_fields() {
-        let config = AppConfig {
-            host: "example.com".to_string(),
-            app_name: "my-app".to_string(),
-            app_url: "app.example.com".to_string(),
-            app_port: "3000".to_string(),
-            app_volumes: String::new(),
-            ssh_user: "minion".to_string(),
-            ssh_key_path: None,
-            ssh_private_key: None,
-            ssh_password: None,
-            ssh_passphrase: None,
-            docker_platform: "linux/amd64".to_string(),
-        };
+        let config = valid_config();
 
         assert!(config.require_deploy().is_ok());
     }
 
     #[test]
+    fn deploy_config_requires_non_empty_values() {
+        let mut config = valid_config();
+        config.host = String::new();
+        assert!(config
+            .require_deploy()
+            .unwrap_err()
+            .to_string()
+            .contains("VPS_HOST"));
+
+        let mut config = valid_config();
+        config.app_name = String::new();
+        assert!(config
+            .require_deploy()
+            .unwrap_err()
+            .to_string()
+            .contains("APP_NAME"));
+
+        let mut config = valid_config();
+        config.app_url = String::new();
+        assert!(config
+            .require_deploy()
+            .unwrap_err()
+            .to_string()
+            .contains("APP_URL"));
+
+        let mut config = valid_config();
+        config.app_port = String::new();
+        assert!(config
+            .require_deploy()
+            .unwrap_err()
+            .to_string()
+            .contains("APP_PORT"));
+    }
+
+    #[test]
+    fn deploy_config_rejects_invalid_port() {
+        let mut config = valid_config();
+        config.app_port = "not-a-port".to_string();
+
+        assert!(config
+            .require_deploy()
+            .unwrap_err()
+            .to_string()
+            .contains("APP_PORT"));
+    }
+
+    #[test]
     fn app_name_rejects_shell_unsafe_characters() {
-        let config = AppConfig {
-            host: "example.com".to_string(),
-            app_name: "my-app;rm".to_string(),
-            app_url: "app.example.com".to_string(),
-            app_port: "3000".to_string(),
-            app_volumes: String::new(),
-            ssh_user: "minion".to_string(),
-            ssh_key_path: None,
-            ssh_private_key: None,
-            ssh_password: None,
-            ssh_passphrase: None,
-            docker_platform: "linux/amd64".to_string(),
-        };
+        let mut config = valid_config();
+        config.app_name = "my-app;rm".to_string();
 
         assert!(config.require_app_control().is_err());
     }

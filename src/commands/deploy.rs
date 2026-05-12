@@ -1,12 +1,17 @@
-use crate::utils::{AppConfig, AppConfigOverrides, CommandExecutor, SshClient};
+use crate::utils::{
+    AppConfig, AppConfigOverrides, CommandExecutor, LocalCommandRunner, RemoteClient, SshClient,
+};
 use anyhow::{anyhow, Result};
 use std::path::Path;
+use std::rc::Rc;
 use tempfile::Builder;
 
 // Include the resource files at compile time
 const APP_DOCKER_COMPOSE: &str = include_str!("../resources/docker-compose.app.yml");
 
-pub struct DeployCommand;
+pub struct DeployCommand {
+    command_runner: Rc<dyn LocalCommandRunner>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DeployOptions {
@@ -17,7 +22,14 @@ pub struct DeployOptions {
 
 impl DeployCommand {
     pub fn new() -> Self {
-        DeployCommand
+        Self {
+            command_runner: Rc::new(CommandExecutor::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_command_runner(command_runner: Rc<dyn LocalCommandRunner>) -> Self {
+        Self { command_runner }
     }
 
     fn parse_volumes(volumes: &str) -> Result<Vec<(String, String)>> {
@@ -36,7 +48,41 @@ impl DeployCommand {
         Ok(mappings)
     }
 
-    fn deploy_app(&self, client: &SshClient, config: &AppConfig) -> Result<()> {
+    fn render_compose(
+        app_name: &str,
+        urls: &str,
+        port: &str,
+        volume_mappings: &[String],
+    ) -> Result<String> {
+        let url_list: Vec<&str> = urls
+            .split(',')
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .collect();
+        if url_list.is_empty() {
+            return Err(anyhow!("At least one URL must be provided"));
+        }
+
+        let host_rules = url_list
+            .iter()
+            .map(|url| format!("Host(`{}`)", url))
+            .collect::<Vec<_>>()
+            .join(" || ");
+
+        let volumes_section = if volume_mappings.is_empty() {
+            String::new()
+        } else {
+            format!("    volumes:\n{}", volume_mappings.join("\n"))
+        };
+
+        Ok(APP_DOCKER_COMPOSE
+            .replace("{{app_name}}", app_name)
+            .replace("{{host_rules}}", &host_rules)
+            .replace("{{port}}", port)
+            .replace("{{volumes_section}}", &volumes_section))
+    }
+
+    fn deploy_app(&self, client: &dyn RemoteClient, config: &AppConfig) -> Result<()> {
         let url_list: Vec<&str> = config
             .app_url
             .split(',')
@@ -46,22 +92,17 @@ impl DeployCommand {
         if url_list.is_empty() {
             return Err(anyhow!("At least one URL must be provided"));
         }
+        let parsed_volumes = Self::parse_volumes(&config.app_volumes)?;
 
         // Build and save the Docker image
         println!("Building Docker image for {}...", config.docker_platform);
-        let cmd = CommandExecutor::new();
+        let image_name = format!("minion_{}", config.app_name);
+        let platform_arg = format!("--platform={}", config.docker_platform);
 
         // Build the image with platform specified
-        let (output, status) = cmd.execute(
-            "docker",
-            &[
-                "build",
-                "-t",
-                &format!("minion_{}", config.app_name),
-                ".",
-                &format!("--platform={}", config.docker_platform),
-            ],
-        )?;
+        let (output, status) = self
+            .command_runner
+            .execute("docker", &["build", "-t", &image_name, ".", &platform_arg])?;
 
         if status != 0 {
             return Err(anyhow!("Failed to build Docker image: {}", output));
@@ -75,15 +116,9 @@ impl DeployCommand {
 
         // Save the image to the temporary file
         println!("Saving image to temporary file...");
-        let (output, status) = cmd.execute(
-            "docker",
-            &[
-                "save",
-                "-o",
-                &temp_path,
-                &format!("minion_{}", config.app_name),
-            ],
-        )?;
+        let (output, status) = self
+            .command_runner
+            .execute("docker", &["save", "-o", &temp_path, &image_name])?;
 
         if status != 0 {
             return Err(anyhow!("Failed to save Docker image: {}", output));
@@ -111,7 +146,6 @@ impl DeployCommand {
 
         // Process volumes
         let mut volume_mappings = Vec::new();
-        let parsed_volumes = Self::parse_volumes(&config.app_volumes)?;
 
         if !parsed_volumes.is_empty() {
             println!("Processing volumes...");
@@ -139,24 +173,13 @@ impl DeployCommand {
             }
         }
 
-        let host_rules = url_list
-            .iter()
-            .map(|url| format!("Host(`{}`)", url))
-            .collect::<Vec<_>>()
-            .join(" || ");
-
-        let volumes_section = if volume_mappings.is_empty() {
-            String::new()
-        } else {
-            format!("    volumes:\n{}", volume_mappings.join("\n"))
-        };
-
         // Generate and upload docker-compose file
-        let compose_content = APP_DOCKER_COMPOSE
-            .replace("{{app_name}}", &config.app_name)
-            .replace("{{host_rules}}", &host_rules)
-            .replace("{{port}}", &config.app_port)
-            .replace("{{volumes_section}}", &volumes_section);
+        let compose_content = Self::render_compose(
+            &config.app_name,
+            &config.app_url,
+            &config.app_port,
+            &volume_mappings,
+        )?;
         let compose_path = format!("{}/docker-compose.yml", app_dir);
 
         println!("Creating docker-compose.yml...");
@@ -214,11 +237,57 @@ impl DeployCommand {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    fn execute_with_client(
+        &self,
+        options: DeployOptions,
+        client: &dyn RemoteClient,
+        project_dir: &Path,
+    ) -> Result<()> {
+        let interactive = !(options.yes || options.ci);
+        let config = AppConfig::load(options.overrides, interactive, interactive)?;
+        config.require_deploy()?;
+
+        if !project_dir.join("Dockerfile").exists() {
+            return Err(anyhow!("Dockerfile not found in current directory"));
+        }
+
+        self.deploy_app(client, &config)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_support::{FakeLocalCommandRunner, FakeRemoteClient};
+
+    fn app_config() -> AppConfig {
+        AppConfig {
+            host: "example.com".to_string(),
+            app_name: "my-app".to_string(),
+            app_url: "app.example.com".to_string(),
+            app_port: "3000".to_string(),
+            app_volumes: String::new(),
+            ssh_user: "minion".to_string(),
+            ssh_key_path: None,
+            ssh_private_key: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            docker_platform: "linux/amd64".to_string(),
+        }
+    }
+
+    fn command_with_runner(runner: std::rc::Rc<FakeLocalCommandRunner>) -> DeployCommand {
+        DeployCommand::with_command_runner(runner)
+    }
+
+    fn compose_write_command(commands: &[String]) -> &str {
+        commands
+            .iter()
+            .find(|command| command.contains("docker-compose.yml"))
+            .expect("compose write command not found")
+    }
 
     #[test]
     fn test_parse_volumes_empty() {
@@ -242,5 +311,238 @@ mod tests {
     fn test_parse_volumes_invalid_format() {
         let result = DeployCommand::parse_volumes("invalid_format");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn successful_deploy_runs_local_and_remote_steps() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner.clone());
+        let remote = FakeRemoteClient::new();
+
+        command.deploy_app(&remote, &app_config()).unwrap();
+
+        let local_commands = runner.commands();
+        assert_eq!(local_commands.len(), 2);
+        assert_eq!(local_commands[0].command, "docker");
+        assert_eq!(
+            local_commands[0].args,
+            vec![
+                "build",
+                "-t",
+                "minion_my-app",
+                ".",
+                "--platform=linux/amd64"
+            ]
+        );
+        assert_eq!(local_commands[1].command, "docker");
+        assert_eq!(local_commands[1].args[0], "save");
+        assert_eq!(local_commands[1].args[3], "minion_my-app");
+
+        let remote_commands = remote.commands();
+        assert!(remote_commands.contains(&"sudo mkdir -p /opt/minion/my-app".to_string()));
+        assert!(remote_commands.contains(&"sudo mkdir -p /opt/minion/my-app/volumes".to_string()));
+        assert!(
+            remote_commands.contains(&"sudo chown -R minion:minion /opt/minion/my-app".to_string())
+        );
+        assert!(compose_write_command(&remote_commands).contains("Host(`app.example.com`)"));
+        assert!(remote_commands
+            .contains(&"cd /opt/minion/my-app && docker load -i my-app.tar".to_string()));
+        assert!(remote_commands.contains(&"rm /opt/minion/my-app/my-app.tar".to_string()));
+        assert!(
+            remote_commands.contains(&"cd /opt/minion/my-app && docker compose up -d".to_string())
+        );
+
+        let copied_files = remote.copied_files();
+        assert_eq!(copied_files.len(), 1);
+        assert_eq!(copied_files[0].1, "/opt/minion/my-app/my-app.tar");
+    }
+
+    #[test]
+    fn docker_build_failure_stops_before_remote_commands() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::with_responses(vec![(
+            "build failed",
+            1,
+        )]));
+        let command = command_with_runner(runner.clone());
+        let remote = FakeRemoteClient::new();
+
+        let error = command.deploy_app(&remote, &app_config()).unwrap_err();
+
+        assert!(error.to_string().contains("Failed to build Docker image"));
+        assert_eq!(runner.commands().len(), 1);
+        assert!(remote.commands().is_empty());
+        assert!(remote.copied_files().is_empty());
+    }
+
+    #[test]
+    fn docker_save_failure_stops_before_remote_copy() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::with_responses(vec![
+            ("", 0),
+            ("save failed", 1),
+        ]));
+        let command = command_with_runner(runner.clone());
+        let remote = FakeRemoteClient::new();
+
+        let error = command.deploy_app(&remote, &app_config()).unwrap_err();
+
+        assert!(error.to_string().contains("Failed to save Docker image"));
+        assert_eq!(runner.commands().len(), 2);
+        assert!(remote.commands().is_empty());
+        assert!(remote.copied_files().is_empty());
+    }
+
+    #[test]
+    fn missing_dockerfile_fails_before_local_or_remote_work() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner.clone());
+        let remote = FakeRemoteClient::new();
+        let project = tempfile::tempdir().unwrap();
+
+        let error = command
+            .execute_with_client(
+                DeployOptions {
+                    ci: true,
+                    overrides: AppConfigOverrides {
+                        host: Some("example.com".to_string()),
+                        app_name: Some("my-app".to_string()),
+                        app_url: Some("app.example.com".to_string()),
+                        app_port: Some("3000".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                &remote,
+                project.path(),
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Dockerfile not found"));
+        assert!(runner.commands().is_empty());
+        assert!(remote.commands().is_empty());
+    }
+
+    #[test]
+    fn multiple_urls_render_traefik_host_rules() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner);
+        let remote = FakeRemoteClient::new();
+        let mut config = app_config();
+        config.app_url = "app.example.com,www.example.com".to_string();
+
+        command.deploy_app(&remote, &config).unwrap();
+
+        let remote_commands = remote.commands();
+        assert!(compose_write_command(&remote_commands)
+            .contains("Host(`app.example.com`) || Host(`www.example.com`)"));
+    }
+
+    #[test]
+    fn empty_volumes_omit_compose_volumes_section() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner);
+        let remote = FakeRemoteClient::new();
+
+        command.deploy_app(&remote, &app_config()).unwrap();
+
+        let remote_commands = remote.commands();
+        assert!(!compose_write_command(&remote_commands).contains("    volumes:\n"));
+    }
+
+    #[test]
+    fn valid_volumes_create_remote_dirs_and_render_mappings() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner);
+        let remote = FakeRemoteClient::new();
+        let mut config = app_config();
+        config.app_volumes = "data:/data,uploads:/uploads".to_string();
+
+        command.deploy_app(&remote, &config).unwrap();
+
+        let remote_commands = remote.commands();
+        assert!(
+            remote_commands.contains(&"sudo mkdir -p /opt/minion/my-app/volumes/data".to_string())
+        );
+        assert!(remote_commands
+            .contains(&"sudo mkdir -p /opt/minion/my-app/volumes/uploads".to_string()));
+
+        let compose = compose_write_command(&remote_commands);
+        assert!(compose.contains("      - /opt/minion/my-app/volumes/data:/data"));
+        assert!(compose.contains("      - /opt/minion/my-app/volumes/uploads:/uploads"));
+    }
+
+    #[test]
+    fn invalid_volume_syntax_fails_before_docker_build() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner.clone());
+        let remote = FakeRemoteClient::new();
+        let mut config = app_config();
+        config.app_volumes = "invalid".to_string();
+
+        let error = command.deploy_app(&remote, &config).unwrap_err();
+
+        assert!(error.to_string().contains("Invalid volume format"));
+        assert!(runner.commands().is_empty());
+        assert!(remote.commands().is_empty());
+    }
+
+    #[test]
+    fn docker_platform_override_affects_build_command() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner.clone());
+        let remote = FakeRemoteClient::new();
+        let mut config = app_config();
+        config.docker_platform = "linux/arm64".to_string();
+
+        command.deploy_app(&remote, &config).unwrap();
+
+        assert_eq!(
+            runner.commands()[0].args,
+            vec![
+                "build",
+                "-t",
+                "minion_my-app",
+                ".",
+                "--platform=linux/arm64"
+            ]
+        );
+    }
+
+    #[test]
+    fn docker_platform_cli_override_affects_build_command() {
+        let runner = std::rc::Rc::new(FakeLocalCommandRunner::new());
+        let command = command_with_runner(runner.clone());
+        let remote = FakeRemoteClient::new();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+
+        command
+            .execute_with_client(
+                DeployOptions {
+                    ci: true,
+                    overrides: AppConfigOverrides {
+                        host: Some("example.com".to_string()),
+                        app_name: Some("my-app".to_string()),
+                        app_url: Some("app.example.com".to_string()),
+                        app_port: Some("3000".to_string()),
+                        docker_platform: Some("linux/arm64".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                &remote,
+                project.path(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            runner.commands()[0].args,
+            vec![
+                "build",
+                "-t",
+                "minion_my-app",
+                ".",
+                "--platform=linux/arm64"
+            ]
+        );
     }
 }
