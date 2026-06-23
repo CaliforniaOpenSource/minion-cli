@@ -28,16 +28,6 @@ curl -fsSL https://raw.githubusercontent.com/CaliforniaOpenSource/minion-cli/mai
 sudo minion-hub init
 ```
 
-If the repository is private, provide a GitHub token that can read the repo:
-
-```bash
-GITHUB_TOKEN=<token> sh -c 'curl -fsSL \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
-  https://raw.githubusercontent.com/CaliforniaOpenSource/minion-cli/main/install-minion-hub.sh \
-  | GITHUB_TOKEN="$GITHUB_TOKEN" sh'
-sudo minion-hub init
-```
-
 The installer detects `amd64` or `arm64`, downloads the matching GitHub Release
 asset, verifies it with `minion-hub-checksums.txt`, and installs the binary to
 `/usr/local/bin/minion-hub`.

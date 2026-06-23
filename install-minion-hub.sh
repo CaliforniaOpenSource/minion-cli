@@ -6,7 +6,6 @@ VERSION="${MINION_HUB_VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BIN_NAME="minion-hub"
 CHECKSUMS_NAME="minion-hub-checksums.txt"
-TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -23,17 +22,6 @@ need tar
 need sha256sum
 need uname
 need mktemp
-
-download() {
-  if [ -n "$TOKEN" ]; then
-    curl -fsSL \
-      -H "Authorization: Bearer ${TOKEN}" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$@"
-  else
-    curl -fsSL "$@"
-  fi
-}
 
 os="$(uname -s)"
 if [ "$os" != "Linux" ]; then
@@ -68,8 +56,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "Downloading ${asset} from ${REPO} (${VERSION})..."
-download -o "${tmp_dir}/${asset}" "${download_base}/${asset}"
-download -o "${tmp_dir}/${CHECKSUMS_NAME}" "${download_base}/${CHECKSUMS_NAME}"
+curl -fsSL -o "${tmp_dir}/${asset}" "${download_base}/${asset}"
+curl -fsSL -o "${tmp_dir}/${CHECKSUMS_NAME}" "${download_base}/${CHECKSUMS_NAME}"
 
 (
   cd "$tmp_dir"
