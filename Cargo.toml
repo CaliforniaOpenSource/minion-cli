@@ -1,6 +1,6 @@
 [package]
 name = "minion-cli"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2021"
 description = "A CLI tool to streamline application deployments to remote VPS servers"
 authors = ["Kevin Dewald <kevin@californiaopensource.com"]
@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "minion-hub"
-path = "src/bin/minion-hub.rs"
+path = "src/bin/minion-hub/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"

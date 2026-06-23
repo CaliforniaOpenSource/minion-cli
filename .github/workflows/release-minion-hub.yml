@@ -1,0 +1,94 @@
+name: Release minion-hub
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to upload assets to
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset_arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            asset_arch: amd64
+          - runner: ubuntu-24.04-arm
+            asset_arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            libssh2-1-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install Rust
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          else
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+          fi
+
+      - name: Build minion-hub
+        run: cargo build --locked --release --bin minion-hub
+
+      - name: Package minion-hub
+        run: |
+          asset="minion-hub-linux-${{ matrix.asset_arch }}.tar.gz"
+          mkdir -p dist
+          cp target/release/minion-hub dist/minion-hub
+          tar -czf "$asset" -C dist minion-hub
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: minion-hub-linux-${{ matrix.asset_arch }}
+          path: minion-hub-linux-${{ matrix.asset_arch }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Upload release assets
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: minion-hub-linux-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum minion-hub-linux-*.tar.gz > minion-hub-checksums.txt
+
+      - name: Upload assets to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" \
+            minion-hub-linux-*.tar.gz \
+            minion-hub-checksums.txt \
+            --clobber

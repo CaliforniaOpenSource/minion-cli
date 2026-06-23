@@ -149,6 +149,13 @@ This command will:
 
 Your app will be available at `https://app.example.com` after deployment completes.
 
+## Private Hub
+
+The `minion-hub` companion executable sets up a private WireGuard/CoreDNS hub and
+serves a small machine-management API on the private network. See
+[MINION_HUB.md](MINION_HUB.md) for setup, client configuration, API examples, and
+troubleshooting.
+
 ## Configuration File
 
 The `.minion` file stores your deployment configuration:
