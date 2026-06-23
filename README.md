@@ -55,12 +55,31 @@ cargo build --release
 cargo install --path .
 ```
 
-This will install the `minion` command in your PATH.
+This will install the `minion` and `minion-hub` commands in your PATH.
 
 To verify installation:
 ```bash
 minion --version
 ```
+
+## Testing
+
+Run the default test suite:
+
+```bash
+cargo test
+```
+
+The `minion-hub` Docker file/config test uses `ubuntu:25.10` and is ignored by
+default because it downloads packages and can be slow:
+
+```bash
+cargo test --test minion_hub_docker -- --ignored
+```
+
+That test verifies generated config files, idempotence, and API file-update
+regressions. It does not start a real WireGuard interface; privileged interface
+tests require Docker networking capabilities such as `NET_ADMIN`.
 
 ## Usage
 

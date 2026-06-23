@@ -22,6 +22,10 @@ fn minion_command() -> Command {
     command
 }
 
+fn minion_hub_command() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_minion-hub"))
+}
+
 fn run_in_empty_dir(args: &[&str]) -> Output {
     let temp_dir = tempfile::tempdir().unwrap();
     minion_command()
@@ -41,6 +45,15 @@ fn root_help_lists_control_commands() {
     assert!(stdout.contains("status"));
     assert!(stdout.contains("logs"));
     assert!(stdout.contains("doctor"));
+}
+
+#[test]
+fn minion_hub_help_is_available() {
+    let output = minion_hub_command().arg("--help").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("Hub companion executable for Minion"));
 }
 
 #[test]
