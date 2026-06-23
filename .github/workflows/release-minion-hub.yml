@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
 
       - name: Install build dependencies
         run: |
@@ -87,8 +89,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
-          gh release view "$RELEASE_TAG" >/dev/null
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
           gh release upload "$RELEASE_TAG" \
             minion-hub-linux-*.tar.gz \
             minion-hub-checksums.txt \
-            --clobber
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
